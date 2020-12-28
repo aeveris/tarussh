@@ -1,45 +1,55 @@
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use rand::{thread_rng, Rng};
 
-use async_std::prelude::*;
-use async_std::{io, net, task};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::{io, net, task, time};
 
-use futures::stream::StreamExt;
-
-#[async_std::main]
-#[allow(unused_must_use)]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> io::Result<()> {
-    let socket = net::TcpListener::bind("0.0.0.0:2222").await?;
-    socket
-        .incoming()
-        .for_each_concurrent(4096, |s| async move {
-            if let Ok(s) = s {
-                handle_client(s).await;
+    let client_count = Arc::new(AtomicU32::new(0));
+    let socket = tokio::net::TcpListener::bind("0.0.0.0:2222").await?;
+    println!("accepting connections");
+    loop {
+        // Just log failed connections, we don't care
+        match socket.accept().await {
+            Ok((s, _)) => {
+                let ccount = client_count.clone();
+                task::spawn(handle_client(s, ccount));
             }
-        })
-        .await;
+            Err(e) => println!("error on connection! {}", e),
+        }
+    }
     Ok(())
 }
 
-async fn handle_client(mut stream: net::TcpStream) -> io::Result<()> {
+async fn handle_client(mut stream: net::TcpStream, ccount: Arc<AtomicU32>) -> io::Result<()> {
     let mut buf = [0u8; 255];
-    stream.read(&mut buf).await?;
+    let prev = ccount.fetch_add(1, Ordering::Relaxed);
     let addr = stream.peer_addr()?;
-    println!("new client! {}", addr.to_string());
-    let mut rng = thread_rng();
+    println!("new client! {} ({} currently)", addr.to_string(), prev + 1);
+    stream.read(&mut buf).await?;
     loop {
-        let len = gen_answer(&mut rng, &mut buf).await;
+        let len = gen_answer(&mut buf).await;
         if let Err(_) = stream.write_all(&buf[..len]).await {
             break;
         }
-        task::sleep(Duration::from_secs(10)).await;
+        time::sleep(Duration::from_secs(10)).await;
     }
-    println!("client disconnect! {}", addr.to_string());
+    let prev = ccount.fetch_sub(1, Ordering::Relaxed);
+    println!(
+        "client disconnect! {} ({} remaining)",
+        addr.to_string(),
+        prev - 1
+    );
     Ok(())
 }
 
-async fn gen_answer<R: Rng>(rng: &mut R, target_buf: &mut [u8]) -> usize {
+async fn gen_answer(target_buf: &mut [u8]) -> usize {
+    let mut rng = thread_rng();
+
     // The maximum allowed length with CR LF is 255 bytes, that leaves 253 without the line termination
     let max_length = 253;
 
