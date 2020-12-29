@@ -14,7 +14,7 @@ use structopt::StructOpt;
 struct TarOpts {
     #[structopt(
         long,
-        short,
+        short = "-l",
         default_value = "42",
         help = "Maximum length of sent headers. Clamped to [3, 253]"
     )]
@@ -30,6 +30,14 @@ struct TarOpts {
         help = "Delay between messages in ms"
     )]
     delay: u32,
+
+    #[structopt(
+        long,
+        short,
+        default_value = "2048",
+        help = "Maximum number of trapped clients"
+    )]
+    max_clients: u32,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -38,14 +46,21 @@ async fn main() -> io::Result<()> {
     let max_line_length = opts.max_line_length.clamp(3, 253);
     let client_count = Arc::new(AtomicU32::new(0));
     let socket = net::TcpListener::bind(("::0", opts.port)).await?;
-    println!("accepting connections");
+
+    println!("accepting connections on port {}", opts.port);
     loop {
-        match socket.accept().await {
-            Ok((s, _)) => {
-                let ccount = client_count.clone();
-                task::spawn(handle_client(s, ccount, max_line_length, opts.delay));
+        if client_count.load(Ordering::Relaxed) < opts.max_clients {
+            match socket.accept().await {
+                Ok((s, addr)) => {
+                    let prev = client_count.fetch_add(1, Ordering::Relaxed);
+                    println!("new client! {} ({} currently)", addr.to_string(), prev + 1);
+                    let ccount = client_count.clone();
+                    task::spawn(handle_client(s, ccount, max_line_length, opts.delay));
+                }
+                Err(e) => println!("error on connection! {}", e),
             }
-            Err(e) => println!("error on connection! {}", e),
+        } else {
+            time::sleep(Duration::from_millis(opts.delay as u64)).await;
         }
     }
     Ok(())
@@ -58,9 +73,7 @@ async fn handle_client(
     delay: u32,
 ) -> io::Result<()> {
     let mut buf = [0u8; 255];
-    let prev = ccount.fetch_add(1, Ordering::Relaxed);
     let addr = stream.peer_addr()?;
-    println!("new client! {} ({} currently)", addr.to_string(), prev + 1);
     stream.read(&mut buf).await?;
     loop {
         let len = gen_answer(&mut buf, max_line_length).await;
