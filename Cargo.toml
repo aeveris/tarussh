@@ -8,6 +8,6 @@ edition = "2018"
 
 [dependencies]
 futures = "0.3"
-tokio = { version = "1.0", features = ["rt", "time", "macros", "net", "io-util"] }
+tokio = { version = "1.0", features = ["rt", "time", "macros", "net", "io-util", "signal"] }
 rand = "0.8"
 structopt = "0.3"

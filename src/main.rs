@@ -1,10 +1,13 @@
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use net::TcpListener;
 use rand::{thread_rng, Rng};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::select;
+use tokio::signal::unix::{signal, SignalKind};
 use tokio::{io, net, task, time};
 
 use structopt::StructOpt;
@@ -42,20 +45,52 @@ struct TarOpts {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> io::Result<()> {
-    let opts = TarOpts::from_args();
-    let max_line_length = opts.max_line_length.clamp(3, 253);
-    let client_count = Arc::new(AtomicU32::new(0));
+    let opts: TarOpts = TarOpts::from_args();
     let socket = net::TcpListener::bind(("::0", opts.port)).await?;
 
+    let client_count = Arc::new(AtomicU32::new(0));
+    let should_stop = Arc::new(AtomicBool::new(false));
+
     println!("accepting connections on port {}", opts.port);
+    println!("use CTRL-C for a graceful shutdown");
+
+    let mut stream = signal(SignalKind::interrupt())?;
+    let sstop = should_stop.clone();
+    let ccount = client_count.clone();
+    select! {
+        _ = async move {
+            stream.recv().await;
+            sstop.store(true, Ordering::Relaxed);
+            while ccount.load(Ordering::Relaxed) > 0 {
+                time::sleep(Duration::from_millis(1000)).await;
+            }
+        } => (),
+        _ = server(socket, opts, client_count, should_stop) => ()
+    };
+    Ok(())
+}
+
+async fn server(
+    listener: TcpListener,
+    opts: TarOpts,
+    client_count: Arc<AtomicU32>,
+    should_stop: Arc<AtomicBool>,
+) {
     loop {
         if client_count.load(Ordering::Relaxed) < opts.max_clients {
-            match socket.accept().await {
+            match listener.accept().await {
                 Ok((s, addr)) => {
                     let prev = client_count.fetch_add(1, Ordering::Relaxed);
                     println!("new client! {} ({} currently)", addr.to_string(), prev + 1);
                     let ccount = client_count.clone();
-                    task::spawn(handle_client(s, ccount, max_line_length, opts.delay));
+                    let sstop = should_stop.clone();
+                    task::spawn(handle_client(
+                        s,
+                        ccount,
+                        opts.max_line_length.clamp(3, 253),
+                        opts.delay,
+                        sstop,
+                    ));
                 }
                 Err(e) => println!("error on connection! {}", e),
             }
@@ -63,7 +98,6 @@ async fn main() -> io::Result<()> {
             time::sleep(Duration::from_millis(opts.delay as u64)).await;
         }
     }
-    Ok(())
 }
 
 async fn handle_client(
@@ -71,11 +105,12 @@ async fn handle_client(
     ccount: Arc<AtomicU32>,
     max_line_length: u8,
     delay: u32,
+    should_stop: Arc<AtomicBool>,
 ) -> io::Result<()> {
     let mut buf = [0u8; 255];
     let addr = stream.peer_addr()?;
     stream.read(&mut buf).await?;
-    loop {
+    while !should_stop.load(Ordering::Relaxed) {
         let len = gen_answer(&mut buf, max_line_length).await;
         if let Err(_) = stream.write_all(&buf[..len]).await {
             break;
