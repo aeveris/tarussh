@@ -2,7 +2,6 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use net::TcpListener;
 use rand::{thread_rng, Rng};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -71,7 +70,7 @@ async fn main() -> io::Result<()> {
 }
 
 async fn server(
-    listener: TcpListener,
+    listener: net::TcpListener,
     opts: TarOpts,
     client_count: Arc<AtomicU32>,
     should_stop: Arc<AtomicBool>,
