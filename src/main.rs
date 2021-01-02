@@ -5,13 +5,12 @@ use std::time::Duration;
 use rand::{thread_rng, Rng};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::select;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::{io, net, task, time};
 
 use structopt::StructOpt;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Clone, Copy, StructOpt)]
 #[structopt(name = "tarussh", about = "A simple SSH tarpit")]
 struct TarOpts {
     #[structopt(
@@ -80,13 +79,21 @@ async fn server(
                     println!("new client! {} ({} currently)", addr.to_string(), prev + 1);
                     let ccount = client_count.clone();
                     let sstop = should_stop.clone();
-                    task::spawn(handle_client(
-                        s,
-                        ccount,
-                        opts.max_line_length.max(3).min(253),
-                        opts.delay,
-                        sstop,
-                    ));
+                    task::spawn(async move {
+                        let _ = handle_client(
+                            s,
+                            opts.max_line_length.max(3).min(253),
+                            opts.delay,
+                            sstop,
+                        )
+                        .await;
+                        let prev = ccount.fetch_sub(1, Ordering::Relaxed);
+                        println!(
+                            "client disconnect! {} ({} remaining)",
+                            addr.to_string(),
+                            prev - 1
+                        );
+                    });
                 }
                 Err(e) => println!("error on connection! {}", e),
             }
@@ -98,7 +105,6 @@ async fn server(
 
 async fn handle_client(
     mut stream: net::TcpStream,
-    ccount: Arc<AtomicU32>,
     max_line_length: u8,
     delay: u32,
     should_stop: Arc<AtomicBool>,
@@ -108,17 +114,9 @@ async fn handle_client(
     stream.read(&mut buf).await?;
     while !should_stop.load(Ordering::Relaxed) {
         let len = gen_answer(&mut buf, max_line_length).await;
-        if let Err(_) = stream.write_all(&buf[..len]).await {
-            break;
-        }
+        stream.write_all(&buf[..len]).await?;
         time::sleep(Duration::from_millis(delay as u64)).await;
     }
-    let prev = ccount.fetch_sub(1, Ordering::Relaxed);
-    println!(
-        "client disconnect! {} ({} remaining)",
-        addr.to_string(),
-        prev - 1
-    );
     Ok(())
 }
 
