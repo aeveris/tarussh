@@ -22,7 +22,7 @@ struct TarOpts {
     )]
     max_line_length: u8,
 
-    #[structopt(long, short, default_value = "2222", help = "Listening port")]
+    #[structopt(long, short, default_value = "22", help = "Listening port")]
     port: u16,
 
     #[structopt(
