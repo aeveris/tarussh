@@ -53,12 +53,12 @@ async fn main() -> io::Result<()> {
     println!("accepting connections on port {}", opts.port);
     println!("use CTRL-C for a graceful shutdown");
 
-    let mut stream = signal(SignalKind::interrupt())?;
+    let mut sigint_stream = signal(SignalKind::interrupt())?;
     let sstop = should_stop.clone();
     let ccount = client_count.clone();
     select! {
         _ = async move {
-            stream.recv().await;
+            sigint_stream.recv().await;
             sstop.store(true, Ordering::Relaxed);
             while ccount.load(Ordering::Relaxed) > 0 {
                 time::sleep(Duration::from_millis(1000)).await;
@@ -86,7 +86,7 @@ async fn server(
                     task::spawn(handle_client(
                         s,
                         ccount,
-                        opts.max_line_length.clamp(3, 253),
+                        opts.max_line_length.max(3).min(253),
                         opts.delay,
                         sstop,
                     ));
