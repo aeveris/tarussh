@@ -12,7 +12,7 @@ use tokio::{io, net, task, time};
 use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
-#[structopt(name = "tarussh", about = "A small SSH tarpit")]
+#[structopt(name = "tarussh", about = "A simple SSH tarpit")]
 struct TarOpts {
     #[structopt(
         long,
@@ -56,16 +56,13 @@ async fn main() -> io::Result<()> {
     let mut sigint_stream = signal(SignalKind::interrupt())?;
     let sstop = should_stop.clone();
     let ccount = client_count.clone();
-    select! {
-        _ = async move {
-            sigint_stream.recv().await;
-            sstop.store(true, Ordering::Relaxed);
-            while ccount.load(Ordering::Relaxed) > 0 {
-                time::sleep(Duration::from_millis(1000)).await;
-            }
-        } => (),
-        _ = server(socket, opts, client_count, should_stop) => ()
-    };
+
+    task::spawn(server(socket, opts, client_count, should_stop));
+    sigint_stream.recv().await;
+    sstop.store(true, Ordering::Relaxed);
+    while ccount.load(Ordering::Relaxed) > 0 {
+        time::sleep(Duration::from_millis(1000)).await;
+    }
     Ok(())
 }
 
